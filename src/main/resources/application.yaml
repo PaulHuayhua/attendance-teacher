@@ -1,0 +1,65 @@
+server:
+  port: ${SERVER_PORT:8089}
+
+spring:
+  application:
+    name: via.academy.attendanceTeacher
+
+  r2dbc:
+    url: ${R2DBC_URL:r2dbc:postgresql://ep-bitter-grass-apxly8gf-pooler.c-7.us-east-1.aws.neon.tech/neondb?sslMode=REQUIRE&channel_binding=require}
+    username: ${R2DBC_USERNAME:neondb_owner}
+    password: ${R2DBC_PASSWORD:npg_Gn0j4EmMovgH}
+    pool:
+      enabled: true
+      initial-size: 2
+      max-size: 10
+      max-idle-time: 30m
+
+  webflux:
+    base-path: /
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:https://lab.vallegrande.edu.pe/prs02/via-academy/keycloak/realms/ViaAcademy}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:https://lab.vallegrande.edu.pe/prs02/via-academy/keycloak/realms/ViaAcademy/protocol/openid-connect/certs}
+
+services:
+  schedules:
+    url: ${SCHEDULES_SERVICE_URL:https://lab.vallegrande.edu.pe/prs02/via-academy/gateway/schedule/api/v1}
+  users:
+    url: ${USERS_SERVICE_URL:https://lab.vallegrande.edu.pe/prs02/via-academy/gateway/user/api/v1}
+  justifications:
+    url: ${JUSTIFICATIONS_SERVICE_URL:https://lab.vallegrande.edu.pe/prs02/via-academy/gateway/justifications/v0.1/api}
+
+security:
+  enabled: ${SECURITY_ENABLED:true}
+
+attendance:
+  processing:
+    enabled: ${ATTENDANCE_PROCESSING_ENABLED:false}
+
+logging:
+  level:
+    prs02.via.academy: DEBUG
+    org.springframework.r2dbc: INFO
+    io.r2dbc.postgresql: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: always
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: via.academy.attendanceTeacher
+    description: Microservicio de asistencia de docentes - Via Academy
+    version: 1.0.0

@@ -1,0 +1,189 @@
+version: '3.8'
+
+# ============================================================
+#  Stack de CI/CD — vg-ms-attendanceTeacher
+#  Imágenes locales ya disponibles en Docker Desktop:
+#    - jenkins/jenkins:latest
+#    - sonarqube:community
+#    - postgres:16-alpine
+#
+#  Uso:
+#    docker compose -f docker-compose.ci.yml up -d
+#    docker compose -f docker-compose.ci.yml down -v   (limpiar todo)
+# ============================================================
+
+networks:
+  ci-network:
+    name: ci-network
+    driver: bridge
+
+volumes:
+  jenkins_home:
+    name: jenkins_home
+  sonarqube_data:
+    name: sonarqube_data
+  sonarqube_extensions:
+    name: sonarqube_extensions
+  sonarqube_logs:
+    name: sonarqube_logs
+  sonar_db_data:
+    name: sonar_db_data
+
+services:
+
+  # ──────────────────────────────────────────────────────────
+  #  Jenkins  →  http://localhost:8080
+  #  Imagen local: jenkins/jenkins:latest
+  # ──────────────────────────────────────────────────────────
+  jenkins:
+    image: jenkins/jenkins:latest      # imagen ya descargada localmente
+    container_name: jenkins
+    restart: unless-stopped
+    privileged: true
+    user: root
+    ports:
+      - "8080:8080"      # Web UI
+      - "50000:50000"    # Agentes JNLP
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker-in-Docker
+    networks:
+      - ci-network
+    depends_on:
+      sonarqube:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/login || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # ──────────────────────────────────────────────────────────
+  #  PostgreSQL para SonarQube
+  #  Imagen local: postgres:16-alpine
+  # ──────────────────────────────────────────────────────────
+  sonar-db:
+    image: postgres:16-alpine          # imagen ya descargada localmente
+    container_name: sonar-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       sonarqube
+      POSTGRES_USER:     sonar
+      POSTGRES_PASSWORD: sonar_pass
+    volumes:
+      - sonar_db_data:/var/lib/postgresql/data
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar -d sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────────────────
+  #  SonarQube  →  http://localhost:9000
+  #  Imagen local: sonarqube:community
+  # ──────────────────────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:community         # imagen ya descargada localmente
+    container_name: sonarqube
+    restart: unless-stopped
+    depends_on:
+      sonar-db:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL:                    jdbc:postgresql://sonar-db:5432/sonarqube
+      SONAR_JDBC_USERNAME:               sonar
+      SONAR_JDBC_PASSWORD:               sonar_pass
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 4096
+        hard: 4096
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # ──────────────────────────────────────────────────────────
+  #  Selenium Grid Hub  →  http://localhost:4444/ui
+  # ──────────────────────────────────────────────────────────
+  selenium-hub:
+    image: selenium/hub:4.18.1
+    container_name: selenium-hub
+    restart: unless-stopped
+    ports:
+      - "4442:4442"
+      - "4443:4443"
+      - "4444:4444"
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4444/wd/hub/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ──────────────────────────────────────────────────────────
+  #  Selenium Node Chrome
+  # ──────────────────────────────────────────────────────────
+  selenium-chrome:
+    image: selenium/node-chrome:4.18.1
+    container_name: selenium-chrome
+    restart: unless-stopped
+    shm_size: '2g'
+    depends_on:
+      - selenium-hub
+    environment:
+      SE_EVENT_BUS_HOST:           selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT:   4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS:        3
+    networks:
+      - ci-network
+
+  # ──────────────────────────────────────────────────────────
+  #  Microservicio (entorno de pruebas CI)
+  #  Levantar con: docker compose --profile app up -d
+  # ──────────────────────────────────────────────────────────
+  attendance-teacher-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vg-ms-attendance-teacher:ci
+    container_name: attendance-teacher-test
+    restart: "no"
+    ports:
+      - "8089:8089"
+    env_file:
+      - .env
+    environment:
+      SECURITY_ENABLED:              false
+      ATTENDANCE_PROCESSING_ENABLED: false
+    networks:
+      - ci-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8089/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    profiles:
+      - app
