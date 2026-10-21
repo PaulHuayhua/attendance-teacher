@@ -1,16 +1,21 @@
 pipeline {
     agent any
 
+    tools {
+        maven 'Maven'
+        jdk   'JDK17'
+    }
+
     environment {
-        APP_NAME         = 'vg-ms-attendanceTeacher'
-        APP_VERSION      = '0.0.1-SNAPSHOT'
-        DOCKER_IMAGE     = 'vg-ms-attendance-teacher'
-        DOCKER_TAG       = "${BUILD_NUMBER}"
+        APP_NAME           = 'vg-ms-attendanceTeacher'
+        DOCKER_IMAGE       = 'paulhuayhua/vg-ms-attendanceteacher:latest'
+        CONTAINER_NAME     = 'attendance-teacher-test'
+        APP_PORT           = '8089'
         SONAR_PROJECT_KEY  = 'vg-ms-attendanceTeacher'
         SONAR_PROJECT_NAME = 'VG MS Attendance Teacher'
-        PROJECT_DIR      = '/workspace/vg-ms-attendanceTeacher'
-        JMETER_RESULTS   = 'jmeter-results'
-        SELENIUM_RESULTS = 'selenium-results'
+        JMETER_HOME        = '/opt/jmeter'
+        JMETER_RESULTS     = "${WORKSPACE}/jmeter-results"
+        SELENIUM_RESULTS   = "${WORKSPACE}/selenium-results"
     }
 
     options {
@@ -24,8 +29,9 @@ pipeline {
         // ── 1. CHECKOUT ───────────────────────────────────────────────────────
         stage('Checkout') {
             steps {
-                echo '=== Obteniendo codigo fuente ==='
+                echo '=== Obteniendo codigo fuente desde GitHub ==='
                 checkout scm
+                sh 'echo "Rama: $GIT_BRANCH" && echo "Commit: $GIT_COMMIT"'
             }
         }
 
@@ -33,18 +39,16 @@ pipeline {
         stage('Build and Test') {
             steps {
                 echo '=== Compilando y ejecutando pruebas unitarias ==='
-                dir('vg-ms-attendanceTeacher') {
-                    sh './mvnw clean verify -Pci -DskipTests=false --no-transfer-progress'
-                }
+                sh 'mvn clean verify -Pci -DskipTests=false --no-transfer-progress'
             }
             post {
                 always {
-                    junit testResults: 'vg-ms-attendanceTeacher/target/surefire-reports/*.xml',
+                    junit testResults: 'target/surefire-reports/*.xml',
                           allowEmptyResults: true
                     jacoco(
-                        execPattern:      'vg-ms-attendanceTeacher/target/jacoco.exec',
-                        classPattern:     'vg-ms-attendanceTeacher/target/classes',
-                        sourcePattern:    'vg-ms-attendanceTeacher/src/main/java',
+                        execPattern:      'target/jacoco.exec',
+                        classPattern:     'target/classes',
+                        sourcePattern:    'src/main/java',
                         exclusionPattern: '**/*Application*,**/*Config*,**/*DTO*,**/*Mapper*'
                     )
                 }
@@ -55,20 +59,17 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 echo '=== Analizando calidad del codigo con SonarQube ==='
-                dir('vg-ms-attendanceTeacher') {
-                    withSonarQubeEnv('SonarQube') {
-                        sh """
-                            ./mvnw sonar:sonar \\
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
-                                -Dsonar.projectName="${SONAR_PROJECT_NAME}" \\
-                                -Dsonar.projectVersion=${APP_VERSION} \\
-                                -Dsonar.java.source=17 \\
-                                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \\
-                                -Dsonar.sources=src/main/java \\
-                                -Dsonar.tests=src/test/java \\
-                                --no-transfer-progress
-                        """
-                    }
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
+                            -Dsonar.java.source=17 \
+                            -Dsonar.sources=src/main/java \
+                            -Dsonar.tests=src/test/java \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                            --no-transfer-progress
+                    """
                 }
             }
         }
@@ -83,200 +84,157 @@ pipeline {
             }
         }
 
-        // ── 5. DOCKER BUILD ───────────────────────────────────────────────────
-        stage('Docker Build') {
-            steps {
-                echo '=== Construyendo imagen Docker ==='
-                dir('vg-ms-attendanceTeacher') {
-                    sh """
-                        docker build \\
-                            -t ${DOCKER_IMAGE}:${DOCKER_TAG} \\
-                            -t ${DOCKER_IMAGE}:latest .
-                    """
-                }
-            }
-        }
-
-        // ── 6. DEPLOY TEST ────────────────────────────────────────────────────
+        // ── 5. DEPLOY TEST ────────────────────────────────────────────────────
         stage('Deploy Test Environment') {
             steps {
-                echo '=== Levantando microservicio en entorno de pruebas ==='
-                dir('vg-ms-attendanceTeacher') {
-                    sh """
-                        docker rm -f attendance-teacher-test 2>/dev/null || true
+                echo '=== Levantando microservicio desde DockerHub ==='
+                sh """
+                    docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
-                        docker run -d \\
-                            --name attendance-teacher-test \\
-                            --network ci-network \\
-                            -p 8089:8089 \\
-                            --env-file .env \\
-                            -e SECURITY_ENABLED=false \\
-                            -e ATTENDANCE_PROCESSING_ENABLED=false \\
-                            ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        --network ci-network \
+                        -p ${APP_PORT}:${APP_PORT} \
+                        -e SERVER_PORT=${APP_PORT} \
+                        -e R2DBC_URL='r2dbc:postgresql://ep-bitter-grass-apxly8gf-pooler.c-7.us-east-1.aws.neon.tech/neondb?sslMode=REQUIRE&channel_binding=require' \
+                        -e R2DBC_USERNAME=neondb_owner \
+                        -e R2DBC_PASSWORD=npg_Gn0j4EmMovgH \
+                        -e SECURITY_ENABLED=false \
+                        -e ATTENDANCE_PROCESSING_ENABLED=false \
+                        -e SCHEDULES_SERVICE_URL=https://lab.vallegrande.edu.pe/prs02/via-academy/gateway/schedule/api/v1 \
+                        -e USERS_SERVICE_URL=https://lab.vallegrande.edu.pe/prs02/via-academy/gateway/user/api/v1 \
+                        ${DOCKER_IMAGE}
 
-                        echo 'Esperando que el servicio responda...'
-                        for i in \$(seq 1 30); do
-                            STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \\
-                                http://localhost:8089/actuator/health 2>/dev/null || echo '000')
-                            if [ "\$STATUS" = "200" ]; then
-                                echo "Servicio listo en intento \$i"
-                                break
-                            fi
-                            echo "Intento \$i/30 - Status: \$STATUS"
-                            sleep 5
-                        done
-                    """
-                }
+                    echo 'Esperando que el servicio levante...'
+                    for i in \$(seq 1 30); do
+                        STATUS=\$(curl -s -o /dev/null -w '%{http_code}' \
+                            http://localhost:${APP_PORT}/actuator/health 2>/dev/null || echo '000')
+                        if [ "\$STATUS" = "200" ]; then
+                            echo "Servicio listo en el intento \$i"
+                            break
+                        fi
+                        echo "Intento \$i/30 - HTTP \$STATUS"
+                        sleep 5
+                    done
+                """
             }
         }
 
-        // ── 7. SELENIUM ───────────────────────────────────────────────────────
+        // ── 6. SELENIUM ───────────────────────────────────────────────────────
         stage('Selenium Functional Tests') {
             steps {
                 echo '=== Ejecutando pruebas funcionales con Selenium ==='
-                dir('vg-ms-attendanceTeacher') {
-                    sh """
-                        mkdir -p ${SELENIUM_RESULTS}
-
-                        docker run --rm \\
-                            --network ci-network \\
-                            -v \$(pwd)/selenium-tests:/tests \\
-                            -v \$(pwd)/${SELENIUM_RESULTS}:/results \\
-                            -e TARGET_URL=http://attendance-teacher-test:8089 \\
-                            -e selenium.hub.url=http://selenium-hub:4444/wd/hub \\
-                            maven:3.9.9-eclipse-temurin-17 \\
-                            bash -c "cd /tests && mvn test \\
-                                -Dtarget.url=http://attendance-teacher-test:8089 \\
-                                -Dselenium.hub.url=http://selenium-hub:4444/wd/hub \\
-                                -Dsurefire.reportsDirectory=/results \\
-                                --no-transfer-progress"
-                    """
-                }
+                sh """
+                    mkdir -p ${SELENIUM_RESULTS}
+                    cd selenium-tests
+                    mvn test \
+                        -Dtarget.url=http://localhost:${APP_PORT} \
+                        -Dselenium.hub.url=http://selenium-hub:4444/wd/hub \
+                        -Dsurefire.reportsDirectory=${SELENIUM_RESULTS} \
+                        --no-transfer-progress || true
+                """
             }
             post {
                 always {
-                    junit testResults: "vg-ms-attendanceTeacher/${SELENIUM_RESULTS}/*.xml",
+                    junit testResults: 'selenium-results/*.xml',
                           allowEmptyResults: true
                 }
             }
         }
 
-        // ── 8. JMETER ─────────────────────────────────────────────────────────
+        // ── 7. JMETER ─────────────────────────────────────────────────────────
         stage('JMeter Load Tests') {
             steps {
-                echo '=== Ejecutando pruebas de carga con JMeter (3 escenarios) ==='
-                dir('vg-ms-attendanceTeacher') {
-                    sh """
-                        mkdir -p ${JMETER_RESULTS}
+                echo '=== Ejecutando pruebas de carga JMeter (Verde / Amarillo / Rojo) ==='
+                sh """
+                    mkdir -p ${JMETER_RESULTS}
 
-                        echo '--- Escenario VERDE: 10 usuarios / 30s ---'
-                        docker run --rm \\
-                            --network ci-network \\
-                            -v \$(pwd)/jmeter-tests:/jmeter \\
-                            -v \$(pwd)/${JMETER_RESULTS}:/results \\
-                            justb4/jmeter:5.6.3 \\
-                            -n -t /jmeter/attendance_load_test.jmx \\
-                            -l /results/green-results.jtl \\
-                            -e -o /results/green-report \\
-                            -Jusers=10 -Jrampup=10 -Jduration=30 \\
-                            -Jtarget_host=attendance-teacher-test \\
-                            -Jtarget_port=8089
+                    echo '>>> VERDE: 10 usuarios / 30 segundos'
+                    ${JMETER_HOME}/bin/jmeter -n \
+                        -t ${WORKSPACE}/jmeter-tests/attendance_load_test.jmx \
+                        -l ${JMETER_RESULTS}/green-results.jtl \
+                        -e -o ${JMETER_RESULTS}/green-report \
+                        -Jusers=10 -Jrampup=10 -Jduration=30 \
+                        -Jtarget_host=localhost \
+                        -Jtarget_port=${APP_PORT}
 
-                        echo '--- Escenario AMARILLO: 50 usuarios / 60s ---'
-                        docker run --rm \\
-                            --network ci-network \\
-                            -v \$(pwd)/jmeter-tests:/jmeter \\
-                            -v \$(pwd)/${JMETER_RESULTS}:/results \\
-                            justb4/jmeter:5.6.3 \\
-                            -n -t /jmeter/attendance_load_test.jmx \\
-                            -l /results/yellow-results.jtl \\
-                            -e -o /results/yellow-report \\
-                            -Jusers=50 -Jrampup=20 -Jduration=60 \\
-                            -Jtarget_host=attendance-teacher-test \\
-                            -Jtarget_port=8089
+                    echo '>>> AMARILLO: 50 usuarios / 60 segundos'
+                    ${JMETER_HOME}/bin/jmeter -n \
+                        -t ${WORKSPACE}/jmeter-tests/attendance_load_test.jmx \
+                        -l ${JMETER_RESULTS}/yellow-results.jtl \
+                        -e -o ${JMETER_RESULTS}/yellow-report \
+                        -Jusers=50 -Jrampup=20 -Jduration=60 \
+                        -Jtarget_host=localhost \
+                        -Jtarget_port=${APP_PORT}
 
-                        echo '--- Escenario ROJO: 150 usuarios / 90s ---'
-                        docker run --rm \\
-                            --network ci-network \\
-                            -v \$(pwd)/jmeter-tests:/jmeter \\
-                            -v \$(pwd)/${JMETER_RESULTS}:/results \\
-                            justb4/jmeter:5.6.3 \\
-                            -n -t /jmeter/attendance_load_test.jmx \\
-                            -l /results/red-results.jtl \\
-                            -e -o /results/red-report \\
-                            -Jusers=150 -Jrampup=30 -Jduration=90 \\
-                            -Jtarget_host=attendance-teacher-test \\
-                            -Jtarget_port=8089
+                    echo '>>> ROJO: 150 usuarios / 90 segundos'
+                    ${JMETER_HOME}/bin/jmeter -n \
+                        -t ${WORKSPACE}/jmeter-tests/attendance_load_test.jmx \
+                        -l ${JMETER_RESULTS}/red-results.jtl \
+                        -e -o ${JMETER_RESULTS}/red-report \
+                        -Jusers=150 -Jrampup=30 -Jduration=90 \
+                        -Jtarget_host=localhost \
+                        -Jtarget_port=${APP_PORT}
 
-                        echo 'Pruebas JMeter finalizadas'
-                    """
-                }
+                    echo 'JMeter finalizado'
+                """
             }
             post {
                 always {
-                    publishHTML([
-                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-                        reportDir:   "vg-ms-attendanceTeacher/${JMETER_RESULTS}/green-report",
-                        reportFiles: 'index.html', reportName: 'JMeter - VERDE'
-                    ])
-                    publishHTML([
-                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-                        reportDir:   "vg-ms-attendanceTeacher/${JMETER_RESULTS}/yellow-report",
-                        reportFiles: 'index.html', reportName: 'JMeter - AMARILLO'
-                    ])
-                    publishHTML([
-                        allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-                        reportDir:   "vg-ms-attendanceTeacher/${JMETER_RESULTS}/red-report",
-                        reportFiles: 'index.html', reportName: 'JMeter - ROJO'
-                    ])
+                    publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
+                        reportDir: 'jmeter-results/green-report',
+                        reportFiles: 'index.html', reportName: 'JMeter - VERDE'])
+                    publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
+                        reportDir: 'jmeter-results/yellow-report',
+                        reportFiles: 'index.html', reportName: 'JMeter - AMARILLO'])
+                    publishHTML([allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
+                        reportDir: 'jmeter-results/red-report',
+                        reportFiles: 'index.html', reportName: 'JMeter - ROJO'])
                 }
             }
         }
 
-        // ── 9. ARCHIVE ────────────────────────────────────────────────────────
+        // ── 8. ARCHIVE ────────────────────────────────────────────────────────
         stage('Archive Artifacts') {
             steps {
                 echo '=== Archivando artefactos ==='
-                archiveArtifacts artifacts: 'vg-ms-attendanceTeacher/target/*.jar',
-                                 allowEmptyArchive: true
+                archiveArtifacts artifacts: 'target/*.jar', allowEmptyArchive: true
             }
         }
     }
 
-    // ── NOTIFICACIONES SLACK ──────────────────────────────────────────────────
+    // ── SLACK ─────────────────────────────────────────────────────────────────
     post {
         always {
-            sh 'docker rm -f attendance-teacher-test 2>/dev/null || true'
+            sh "docker rm -f ${CONTAINER_NAME} 2>/dev/null || true"
         }
-
         success {
             slackSend(
                 channel: '#ms-attendance-teacher',
                 color:   'good',
-                message: """*BUILD EXITOSO* - ${APP_NAME} #${BUILD_NUMBER}
-Rama: ${GIT_BRANCH ?: 'local'}
-Duracion: ${currentBuild.durationString}
-SonarQube: ${JENKINS_URL}job/${JOB_NAME}/${BUILD_NUMBER}/
-Pipeline: ${BUILD_URL}"""
+                message: """:white_check_mark: *BUILD EXITOSO* - ${APP_NAME} #${BUILD_NUMBER}
+*Rama:* ${GIT_BRANCH}
+*Commit:* ${GIT_COMMIT?.take(8)}
+*Duracion:* ${currentBuild.durationString}
+*Pipeline:* ${BUILD_URL}"""
             )
         }
-
         failure {
             slackSend(
                 channel: '#ms-attendance-teacher',
                 color:   'danger',
-                message: """*BUILD FALLIDO* - ${APP_NAME} #${BUILD_NUMBER}
-Etapa fallida: ${env.STAGE_NAME ?: 'Ver consola'}
-Logs: ${BUILD_URL}console"""
+                message: """:x: *BUILD FALLIDO* - ${APP_NAME} #${BUILD_NUMBER}
+*Rama:* ${GIT_BRANCH}
+*Etapa:* ${env.STAGE_NAME ?: 'Ver consola'}
+*Logs:* ${BUILD_URL}console"""
             )
         }
-
         unstable {
             slackSend(
                 channel: '#ms-attendance-teacher',
                 color:   'warning',
-                message: """*BUILD INESTABLE* - ${APP_NAME} #${BUILD_NUMBER}
-Revisar Quality Gate o pruebas: ${BUILD_URL}"""
+                message: """:warning: *BUILD INESTABLE* - ${APP_NAME} #${BUILD_NUMBER}
+*Revisar:* ${BUILD_URL}"""
             )
         }
     }

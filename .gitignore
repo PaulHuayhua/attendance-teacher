@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### CI/CD — no subir resultados ni caché local ###
+.m2/
+jmeter-results/
+selenium-results/
+*.jtl
+
+### Credenciales — NUNCA subir ###
+.env
