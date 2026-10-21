@@ -1,12 +1,9 @@
 pipeline {
     agent any
 
-    tools {
-        maven 'Maven'
-        jdk   'JDK17'
-    }
-
     environment {
+        JAVA_HOME = '/opt/java/openjdk'
+        PATH      = "/opt/java/openjdk/bin:/usr/local/bin:${env.PATH}"
         APP_NAME           = 'vg-ms-attendanceTeacher'
         DOCKER_IMAGE       = 'paulhuayhua/vg-ms-attendanceteacher:latest'
         CONTAINER_NAME     = 'attendance-teacher-test'
