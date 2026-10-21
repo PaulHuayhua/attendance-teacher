@@ -120,15 +120,22 @@ pipeline {
         // ── 6. SELENIUM ───────────────────────────────────────────────────────
         stage('Selenium Functional Tests') {
             steps {
-                echo '=== Ejecutando pruebas funcionales con Selenium ==='
+                echo '=== Ejecutando pruebas funcionales con Selenium Grid ==='
                 sh """
                     mkdir -p ${SELENIUM_RESULTS}
-                    cd selenium-tests
-                    mvn test \
-                        -Dtarget.url=http://localhost:${APP_PORT} \
-                        -Dselenium.hub.url=http://selenium-hub:4444/wd/hub \
-                        -Dsurefire.reportsDirectory=${SELENIUM_RESULTS} \
-                        --no-transfer-progress || true
+
+                    docker run --rm \
+                        --network ci-network \
+                        --name selenium-tests-${BUILD_NUMBER} \
+                        -v ${WORKSPACE}/selenium-tests:/tests \
+                        -v ${SELENIUM_RESULTS}:/results \
+                        maven:3.9.9-eclipse-temurin-17 \
+                        bash -c "cd /tests && mvn test \
+                            -Dtarget.url=http://${CONTAINER_NAME}:${APP_PORT} \
+                            -Dselenium.hub.url=http://selenium-hub:4444/wd/hub \
+                            -Dsurefire.reportsDirectory=/results \
+                            --no-transfer-progress \
+                            -Dmaven.repo.local=/tmp/.m2 || true"
                 """
             }
             post {
